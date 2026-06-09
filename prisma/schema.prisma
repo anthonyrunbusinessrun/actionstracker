@@ -1,0 +1,432 @@
+// This is your Prisma schema file
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// USERS & AUTH
+// ============================================================
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  name          String
+  role          UserRole @default(EMPLOYEE)
+  avatarUrl     String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  sessions      Session[]
+  accounts      Account[]
+  
+  // Action relationships
+  actionsAssigned  ActionAssignee[]
+  actionsQA        ActionQA[]
+  actionsPOC       ActionPOC[]
+  actionsCreated   Action[]      @relation("CreatedBy")
+  comments         Comment[]
+  activityLogs     ActivityLog[]
+  notifications    Notification[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model Account {
+  id           String  @id @default(cuid())
+  userId       String
+  providerId   String
+  accountId    String
+  accessToken  String?
+  refreshToken String?
+  idToken      String?
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@map("accounts")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@map("verifications")
+}
+
+// ============================================================
+// ACTIONS CORE
+// ============================================================
+
+model Action {
+  id              String         @id @default(cuid())
+  airtableId      String?        @unique  // Airtable record ID for sync
+  code            String?        @unique  // e.g. "A-3195", "OP-2063"
+  sequenceNo      Int?           // Auto-number from Airtable
+  title           String
+  brief           String?        // Rich text description
+  businessTerms   String?        // Rich text
+  
+  // Scheduling
+  accrueDate      DateTime?      // When the action accrues/starts
+  startAt         DateTime?      // Actual start datetime
+  endAt           DateTime?      // Actual end datetime
+  durationHours   Float?         // Computed hours
+  
+  // Classification
+  status          ActionStatus?
+  actionType      String?        // Sourcing, Tasking, Email, Meeting, etc.
+  stage           String?        // Phase: "(1) Phase I", etc.
+  wbs             String?        // Work breakdown structure code
+  
+  // Position metadata (kanban board positioning JSON)
+  boardPosition   Json?
+  
+  // Location/performance
+  placeOfPerform  String?
+  periodOfPerform String?
+  
+  // Misc
+  contextTags     String[]       // Multi-select: Branford, Austin, Iloilo, etc.
+  number          Float?
+  sort            Float?
+  
+  // Sync metadata
+  airtableCreatedAt  DateTime?
+  airtableUpdatedAt  DateTime?
+  lastSyncedAt       DateTime?
+  syncHash           String?    // Hash for change detection
+  
+  // App metadata
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  isArchived      Boolean        @default(false)
+  createdById     String?
+  
+  // Relationships
+  createdBy       User?          @relation("CreatedBy", fields: [createdById], references: [id])
+  assignees       ActionAssignee[]
+  qaReviewers     ActionQA[]
+  pocContacts     ActionPOC[]
+  folioLinks      ActionFolio[]
+  lineItems       ActionLine[]
+  outcomes        ActionOutcome[]
+  attachments     Attachment[]
+  comments        Comment[]
+  activityLogs    ActivityLog[]
+
+  @@index([status])
+  @@index([accrueDate])
+  @@index([actionType])
+  @@index([createdAt])
+  @@index([airtableId])
+  @@map("actions")
+}
+
+// Junction tables for people relationships
+model ActionAssignee {
+  id        String @id @default(cuid())
+  actionId  String
+  userId    String
+  
+  action    Action @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([actionId, userId])
+  @@map("action_assignees")
+}
+
+model ActionQA {
+  id        String @id @default(cuid())
+  actionId  String
+  userId    String
+  
+  action    Action @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([actionId, userId])
+  @@map("action_qa")
+}
+
+model ActionPOC {
+  id        String @id @default(cuid())
+  actionId  String
+  userId    String
+  
+  action    Action @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([actionId, userId])
+  @@map("action_poc")
+}
+
+// ============================================================
+// FOLIOS (Projects)
+// ============================================================
+
+model Folio {
+  id            String   @id @default(cuid())
+  airtableId    String?  @unique
+  name          String
+  narrative     String?
+  tmNumber      String?
+  tmLink        String?
+  googleDriveUrl String?
+  isInactive    Boolean  @default(false)
+  sortRating    Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  actions       ActionFolio[]
+  
+  @@map("folios")
+}
+
+model ActionFolio {
+  id       String @id @default(cuid())
+  actionId String
+  folioId  String
+  
+  action   Action @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  folio    Folio  @relation(fields: [folioId], references: [id], onDelete: Cascade)
+  
+  @@unique([actionId, folioId])
+  @@map("action_folios")
+}
+
+// ============================================================
+// LINE ITEMS (sub-tasks / work items)
+// ============================================================
+
+model LineItem {
+  id         String   @id @default(cuid())
+  airtableId String?  @unique
+  title      String?
+  createdAt  DateTime @default(now())
+  
+  actions    ActionLine[]
+  
+  @@map("line_items")
+}
+
+model ActionLine {
+  id         String   @id @default(cuid())
+  actionId   String
+  lineItemId String
+  
+  action     Action   @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  lineItem   LineItem @relation(fields: [lineItemId], references: [id], onDelete: Cascade)
+  
+  @@unique([actionId, lineItemId])
+  @@map("action_lines")
+}
+
+// ============================================================
+// OUTCOMES
+// ============================================================
+
+model Outcome {
+  id         String   @id @default(cuid())
+  airtableId String?  @unique
+  title      String?
+  createdAt  DateTime @default(now())
+  
+  actions    ActionOutcome[]
+  
+  @@map("outcomes")
+}
+
+model ActionOutcome {
+  id        String  @id @default(cuid())
+  actionId  String
+  outcomeId String
+  
+  action    Action  @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  outcome   Outcome @relation(fields: [outcomeId], references: [id], onDelete: Cascade)
+  
+  @@unique([actionId, outcomeId])
+  @@map("action_outcomes")
+}
+
+// ============================================================
+// ATTACHMENTS
+// ============================================================
+
+model Attachment {
+  id         String   @id @default(cuid())
+  actionId   String
+  fileName   String
+  fileUrl    String
+  fileSize   Int?
+  mimeType   String?
+  thumbnailUrl String?
+  airtableId String?
+  createdAt  DateTime @default(now())
+  
+  action     Action   @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  
+  @@map("attachments")
+}
+
+// ============================================================
+// COMMENTS
+// ============================================================
+
+model Comment {
+  id        String   @id @default(cuid())
+  actionId  String
+  authorId  String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  action    Action   @relation(fields: [actionId], references: [id], onDelete: Cascade)
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  
+  @@map("comments")
+}
+
+// ============================================================
+// ACTIVITY LOG (Audit Trail)
+// ============================================================
+
+model ActivityLog {
+  id         String         @id @default(cuid())
+  actionId   String?
+  userId     String?
+  event      ActivityEvent
+  entityType String
+  entityId   String
+  changes    Json?
+  metadata   Json?
+  createdAt  DateTime       @default(now())
+  
+  action     Action?        @relation(fields: [actionId], references: [id], onDelete: SetNull)
+  user       User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  @@index([actionId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+// ============================================================
+// NOTIFICATIONS
+// ============================================================
+
+model Notification {
+  id        String             @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  link      String?
+  isRead    Boolean            @default(false)
+  createdAt DateTime           @default(now())
+  
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+// ============================================================
+// SYNC METADATA
+// ============================================================
+
+model SyncLog {
+  id          String     @id @default(cuid())
+  status      SyncStatus
+  recordsProcessed Int   @default(0)
+  recordsCreated   Int   @default(0)
+  recordsUpdated   Int   @default(0)
+  recordsSkipped   Int   @default(0)
+  errorMessage    String?
+  duration        Int?   // ms
+  startedAt       DateTime @default(now())
+  completedAt     DateTime?
+  
+  @@map("sync_logs")
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum UserRole {
+  SUPER_ADMIN
+  EXECUTIVE
+  MANAGER
+  TEAM_LEAD
+  EMPLOYEE
+  VIEWER
+}
+
+enum ActionStatus {
+  NOW
+  PRIORITY
+  QUEUE
+  SCHEDULED
+  WAITING_FOR
+  SOMEDAY_MAYBE
+  REVIEW
+  PROBLEM
+  DELEGATE
+  TENTATIVE
+  ARCHIVE
+  REMINDER
+  ONGOING
+  SCRAPPED
+  SNOOZED
+}
+
+enum ActivityEvent {
+  CREATED
+  UPDATED
+  STATUS_CHANGED
+  ASSIGNED
+  UNASSIGNED
+  COMMENTED
+  ATTACHMENT_ADDED
+  ATTACHMENT_REMOVED
+  ARCHIVED
+  UNARCHIVED
+  SYNCED
+}
+
+enum NotificationType {
+  ASSIGNED
+  MENTIONED
+  DUE_SOON
+  OVERDUE
+  STATUS_CHANGED
+  COMMENT
+}
+
+enum SyncStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+  PARTIAL
+}
